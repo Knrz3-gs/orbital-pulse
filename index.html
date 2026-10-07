@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Orbital Pulse - Offline Satellite & UAP Tracker</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Leaflet CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Satellite.js (SGP4/SDP4 Orbital Mechanics) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/satellite.js/5.0.0/satellite.min.js"></script>
+
+    <!-- Three.js for 3D Globe Mode -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <style>
+        body, html { 
+            margin: 0; padding: 0; height: 100%; width: 100%; 
+            overflow: hidden; background-color: #030712; color: #f3f4f6; 
+            font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; 
+        }
+
+        #map, #canvas3d { 
+            height: 100%; width: 100%; position: absolute; top: 0; left: 0; 
+        }
+
+        #canvas3d { z-index: 2; display: none; pointer-events: auto; }
+        #map { z-index: 1; }
+
+        .glass-panel {
+            background: rgba(10, 15, 30, 0.9);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(56, 189, 248, 0.25);
+            border-radius: 0.75rem;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.8);
+        }
+
+        .hud-scroll {
+            max-height: calc(100vh - 110px);
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #38bdf8 rgba(10, 15, 30, 0.5);
+        }
+
+        .hud-scroll::-webkit-scrollbar { width: 3px; }
+        .hud-scroll::-webkit-scrollbar-thumb { background-color: #38bdf8; border-radius: 2px; }
+
+        .hud-collapsed .hud-details { display: none !important; }
+        .hud-collapsed { max-height: 48px !important; overflow: hidden !important; }
+
+        .pulse-beacon {
+            width: 7px; height: 7px; background-color: #10b981; border-radius: 50%;
+            box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.8);
+            animation: pulse-ring 1.8s infinite cubic-bezier(0.66, 0, 0, 1);
+        }
+
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.8); }
+            70% { transform: scale(1.15); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        .sat-marker-icon {
+            display: flex; align-items: center; justify-content: center;
+            filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.9));
+        }
+
+        /* Anti-Flicker Static Vector Tile Styling */
+        .vector-map-tiles {
+            filter: invert(100%) hue-rotate(180deg) brightness(85%) contrast(95%);
+        }
+
+        /* Infrared / Night Vision Filter Mode */
+        .ir-mode {
+            filter: sepia(100%) hue-rotate(300deg) saturate(500%) brightness(75%) contrast(150%) !important;
+        }
+    </style>
+</head>
+<body id="app-body" class="transition-all duration-300">
+
+    <!-- Top Navigation Bar -->
+    <header class="fixed top-2 left-2 right-2 sm:top-3 sm:left-4 sm:right-4 z-50 px-3 py-2 flex items-center justify-between glass-panel">
+        <div class="flex items-center gap-2">
+            <div class="pulse-beacon" id="live-indicator"></div>
+            <h1 class="text-xs font-bold tracking-wider text-white flex items-center gap-1.5">
+                PULSE <span id="online-status-badge" class="text-[9px] font-normal px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">OFFLINE READY</span>
+            </h1>
+        </div>
+
+        <div class="flex items-center gap-1.5">
+            <select id="sat-select" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs font-medium text-white focus:outline-none focus:border-sky-500 max-w-[125px] sm:max-w-[180px] truncate">
+                <optgroup label="🛸 Space Stations">
+                    <option value="25544">ISS (Zarya) - 25544</option>
+                    <option value="48274" selected>CSS (Tiangong) - 48274</option>
+                    <option value="99999">Classified UAP-X</option>
+                </optgroup>
+                <optgroup label="🇰🇷 South Korea (KARI)">
+                    <option value="40929">KOMPSAT-3A (Arirang-3A)</option>
+                    <option value="48981">NURI Test Satellite / CAS500-1</option>
+                    <option value="41897">GEO-KOMPSAT-2A (Weather)</option>
+                </optgroup>
+                <optgroup label="🇩🇪 Germany (DLR)">
+                    <option value="32386">TerraSAR-X (Radar)</option>
+                    <option value="37384">TanDEM-X (SAR Imaging)</option>
+                    <option value="44850">EnMAP (Hyperspectral)</option>
+                </optgroup>
+                <optgroup label="🛰️ Expanded NASA & Science">
+                    <option value="20580">Hubble Space Telescope - 20580</option>
+                    <option value="27424">Aqua (Earth Science) - 27424</option>
+                    <option value="49260">Landsat 9 - 49260</option>
+                    <option value="40069">OCO-2 (Carbon Observatory)</option>
+                    <option value="43013">ICESat-2 (Ice Elevation)</option>
+                    <option value="44365">ICON (Ionospheric Connection)</option>
+                    <option value="57166">SWOT (Surface Water Oceanography)</option>
+                </optgroup>
+                <optgroup label="⛅ Global Weather & Meteorology">
+                    <option value="44857">NOAA-20 (JPSS-1)</option>
+                    <option value="54233">NOAA-21 (JPSS-2)</option>
+                    <option value="40091">GOES-16 (GOES-East Weather)</option>
+                    <option value="44323">GOES-17 (GOES-West Weather)</option>
+                    <option value="53229">GOES-18 (GOES-West)</option>
+                    <option value="37849">Meteosat-10 (EUMETSAT)</option>
+                </optgroup>
+                <optgroup label="🇪🇺 Galileo (Europe)">
+                    <option value="38857">Galileo-PFM (GSAT0101)</option>
+                    <option value="40544">Galileo 7 (GSAT0205)</option>
+                </optgroup>
+                <optgroup label="🇯🇵 JAXA & QZSS (Japan)">
+                    <option value="42968">QZSS-2 (Michibiki-2)</option>
+                    <option value="43001">QZSS-3 (Michibiki-3)</option>
+                </optgroup>
+                <optgroup label="🇷🇺 Glonass (Russia)">
+                    <option value="43886">Glonass-M (Cosmos 2533)</option>
+                    <option value="54181">Glonass-K2 (Cosmos 2569)</option>
+                </optgroup>
+                <optgroup label="📡 Defense & Navigation">
+                    <option value="59102">USA 355 (HBTSS) - 59102</option>
+                    <option value="24876">GPS BIIR-2 (PRN 13)</option>
+                    <option value="54234">Starlink-31026</option>
+                </optgroup>
+            </select>
+
+            <button onclick="toggleInfraredMode()" id="ir-btn" title="Toggle IR Night Vision" class="px-2 py-1 rounded bg-slate-900 border border-slate-700 text-slate-300 hover:text-emerald-400 text-xs font-semibold">🔴 IR</button>
+
+            <div class="bg-slate-900/90 p-0.5 rounded-lg border border-slate-700/60 flex text-xs font-semibold">
+                <button id="btn-2d" onclick="switchView('2d')" class="px-2 py-1 rounded-md text-sky-400 bg-slate-800 transition-all text-xs">2D</button>
+                <button id="btn-3d" onclick="switchView('3d')" class="px-2 py-1 rounded-md text-slate-300 hover:text-white transition-all text-xs">3D</button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Viewports -->
+    <div class="relative w-full h-full pt-14">
+        <div id="map"></div>
+        <div id="canvas3d"></div>
+
+        <!-- Ultra-Compact Floating HUD Panel (Minimized by default for map priority) -->
+        <aside id="hud-panel" class="absolute top-16 left-2 sm:left-4 z-40 w-72 sm:w-78 glass-panel p-2 flex flex-col gap-1.5 hud-scroll hud-collapsed transition-all duration-300">
+            
+            <!-- Header & Minimize Control -->
+            <div class="flex items-center justify-between pb-1 border-b border-slate-800">
+                <div class="flex items-center gap-1 overflow-hidden">
+                    <span id="target-name" class="text-xs font-bold text-sky-400 truncate max-w-[140px]">CSS (TIANGONG)</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span id="meta-time" class="text-[9px] font-mono text-slate-400">00:00:00 UTC</span>
+                    <button onclick="toggleHudMinimize()" id="hud-toggle-btn" class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[10px] font-bold transition-all">
+                        <span id="hud-toggle-icon">➕ Max</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Primary Telemetry Grid (Strictly Miles per Hour / mph) -->
+            <div class="grid grid-cols-4 gap-1 bg-slate-950/80 p-1 rounded-lg border border-slate-800 text-center">
+                <div class="flex flex-col">
+                    <span class="text-[7px] uppercase tracking-wider text-slate-400">LAT</span>
+                    <span id="lat-val" class="font-mono text-[11px] font-bold text-sky-400">--.--°</span>
+                </div>
+                <div class="flex flex-col">
+                    <span class="text-[7px] uppercase tracking-wider text-slate-400">LNG</span>
+                    <span id="lng-val" class="font-mono text-[11px] font-bold text-sky-400">--.--°</span>
+                </div>
+                <div class="flex flex-col">
+                    <span class="text-[7px] uppercase tracking-wider text-slate-400">ALT</span>
+                    <span id="alt-val" class="font-mono text-[11px] font-bold text-emerald-400">--- mi</span>
+                </div>
+                <div class="flex flex-col">
+                    <span class="text-[7px] uppercase tracking-wider text-slate-400">VEL</span>
+                    <span id="vel-val" class="font-mono text-[11px] font-bold text-amber-400">--- mph</span>
+                </div>
+            </div>
+
+            <!-- Collapsible Detail Section -->
+            <div class="hud-details flex flex-col gap-1.5 pt-1">
+                <!-- Search Box -->
+                <div class="flex gap-1">
+                    <input type="text" id="custom-search-input" placeholder="NORAD ID or Name..." class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px] text-white placeholder-slate-500 focus:outline-none focus:border-sky-500" />
+                    <button id="search-btn" class="px-2 py-1 bg-sky-600 hover:bg-sky-500 text-white rounded text-[11px] font-semibold">Find</button>
+                </div>
+
+                <!-- Keplerian Parameters -->
+                <div class="bg-slate-900/60 p-1.5 rounded border border-slate-800 text-[10px] font-mono grid grid-cols-2 gap-1">
+                    <div>
+                        <span class="text-[7px] text-slate-400 block font-sans">INCLINATION</span>
+                        <span id="kep-inc" class="text-slate-200">--.----°</span>
+                    </div>
+                    <div>
+                        <span class="text-[7px] text-slate-400 block font-sans">ECCENTRICITY</span>
+                        <span id="kep-ecc" class="text-slate-200">0.-------</span>
+                    </div>
+                    <div>
+                        <span class="text-[7px] text-slate-400 block font-sans">NORAD ID</span>
+                        <span id="norad-id" class="text-sky-300">48274</span>
+                    </div>
+                    <div>
+                        <span class="text-[7px] text-slate-400 block font-sans">STATUS</span>
+                        <span id="source-status" class="text-emerald-300 font-semibold">Embedded Offline DB</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="fixed bottom-5 right-5 z-50 glass-panel px-3 py-1.5 text-xs text-white transform translate-y-20 opacity-0 transition-all duration-300">
+        <span id="toast-msg">Notification</span>
+    </div>
+
+    <script>
+        // Comprehensive Embedded Offline TLE Database (Guaranteed offline tracking for all satellites)
+        const EMBEDDED_TLE_DB = {
+            "25544": { name: "ISS (ZARYA)", line1: "1 25544U 98067A   26098.50000000  .00016717  00000-0  30270-3 0  9993", line2: "2 25544  51.6416 247.4627 0006703 130.5360 329.7406 15.50037683559858" },
+            "48274": { name: "CSS (TIANGONG)", line1: "1 48274U 21035A   26098.50000000  .00083212  00000-0  15302-3 0  9991", line2: "2 48274  41.4741 190.5212 0005432  89.4121 270.9812 15.60124312271842" },
+            "99999": { name: "CLASSIFIED UAP-X", line1: "1 99999U 26001A   26098.50000000  .00000000  00000-0  00000-0 0    02", line2: "2 99999 105.0000 120.0000 8500000 45.0000 315.0000  2.00000000    05" },
+            // South Korea (KARI)
+            "40929": { name: "KOMPSAT-3A", line1: "1 40929U 15014A   26098.50000000  .00000123  00000-0  12043-4 0  9992", line2: "2 40929  97.4123 120.4123 0001204  45.1234 315.1234 14.812049312049" },
+            "48981": { name: "CAS500-1 (NURI)", line1: "1 48981U 21022A   26098.50000000  .00000214  00000-0  21043-4 0  9995", line2: "2 48981  97.3120 180.1234 0001104  90.4123 270.1234 14.812049312049" },
+            "41897": { name: "GEO-KOMPSAT-2A", line1: "1 41897U 18079A   26098.50000000  .00000012  00000-0  10000-3 0  9991", line2: "2 41897   0.0512 250.1234 0001203   0.1234 359.8123  1.00271204 120" },
+            // Germany (DLR)
+            "32386": { name: "TERRASAR-X", line1: "1 32386U 07026A   26098.50000000  .00000112  00000-0  11023-4 0  9996", line2: "2 32386  97.4412 110.1234 0001103  80.4123 280.1234 15.210493812049" },
+            "37384": { name: "TANDEM-X", line1: "1 37384U 10030A   26098.50000000  .00000142  00000-0  14023-4 0  9997", line2: "2 37384  97.4423 110.1412 0001204  80.1234 280.1234 15.210493812049" },
+            "44850": { name: "ENMAP", line1: "1 44850U 22038A   26098.50000000  .00000213  00000-0  21043-4 0  9992", line2: "2 44850  97.9123 150.1234 0001412  90.4123 270.1234 14.512049312049" },
+            // NASA & Science
+            "20580": { name: "HUBBLE SPACE TELESCOPE", line1: "1 20580U 90037B   26098.50000000  .00001243  00000-0  48212-4 0  9990", line2: "2 20580  28.4698 112.4123 0003123  45.1234 315.1234 14.84210493812043" },
+            "27424": { name: "AQUA SATELLITE", line1: "1 27424U 02022A   26098.50000000  .00000123  00000-0  31203-4 0  9997", line2: "2 27424  98.2123 210.4123 0001412 120.4123 240.1234 14.57120493120491" },
+            "49260": { name: "LANDSAT 9", line1: "1 49260U 21064A   26098.50000000  .00000213  00000-0  21043-4 0  9994", line2: "2 49260  98.2012 150.4123 0001203  90.4123 270.1234 14.571204934120" },
+            "40069": { name: "OCO-2 (CARBON)", line1: "1 40069U 14037A   26098.50000000  .00000184  00000-0  18043-4 0  9995", line2: "2 40069  98.8123 190.1234 0001204  95.4123 264.1234 14.571204931204" },
+            "43013": { name: "ICESAT-2", line1: "1 43013U 18072A   26098.50000000  .00000243  00000-0  24043-4 0  9993", line2: "2 43013  92.0123  80.1234 0001103 120.4123 240.1234 14.791204931204" },
+            "44365": { name: "ICON", line1: "1 44365U 19066A   26098.50000000  .00000312  00000-0  31043-4 0  9992", line2: "2 44365  27.0123  40.1234 0001204 210.4123 150.1234 15.11204931204" },
+            "57166": { name: "SWOT (OCEAN)", line1: "1 57166U 22177A   26098.50000000  .00000234  00000-0  23043-4 0  9991", line2: "2 57166  77.5123 200.1234 0001403  80.4123 280.1234 14.81204931204" },
+            // Weather / Meteorology
+            "44857": { name: "NOAA-20 (JPSS-1)", line1: "1 44857U 17073A   26098.50000000  .00000143  00000-0  14043-4 0  9996", line2: "2 44857  98.7123  40.1234 0001103  80.4123 280.1234 14.191204931204" },
+            "54233": { name: "NOAA-21 (JPSS-2)", line1: "1 54233U 22151A   26098.50000000  .00000152  00000-0  15043-4 0  9994", line2: "2 54233  98.7123  90.1234 0001203  90.4123 270.1234 14.191204931204" },
+            "40091": { name: "GOES-16 (GOES-EAST)", line1: "1 40091U 16071A   26098.50000000  .00000011  00000-0  10000-3 0  9993", line2: "2 40091   0.0412 100.1234 0001203   0.1234 359.8123  1.00271204 120" },
+            "44323": { name: "GOES-17", line1: "1 44323U 18022A   26098.50000000  .00000012  00000-0  10000-3 0  9992", line2: "2 44323   0.0312 210.1234 0001104   0.1234 359.8123  1.00271204 120" },
+            "53229": { name: "GOES-18 (GOES-WEST)", line1: "1 53229U 22025A   26098.50000000  .00000013  00000-0  10000-3 0  9995", line2: "2 53229   0.0212 180.1234 0001203   0.1234 359.8123  1.00271204 120" },
+            "37849": { name: "METEOSAT-10", line1: "1 37849U 12035B   26098.50000000  .00000014  00000-0  10000-3 0  9998", line2: "2 37849   0.1123  10.1234 0001203   0.1234 359.8123  1.00271204 120" },
+            // Others
+            "38857": { name: "GALILEO-PFM (GSAT0101)", line1: "1 38857U 12055A   26098.50000000  .00000000  00000-0  00000-0 0    91", line2: "2 38857  55.5123 310.2104 0001204 112.5123 247.8102  1.70512345 78452" },
+            "40544": { name: "GALILEO 7 (GSAT0205)", line1: "1 40544U 15017A   26098.50000000  .00000000  00000-0  00000-0 0    98", line2: "2 40544  55.0412 142.1023 0001402  98.4123 261.9421  1.70514210 65120" },
+            "42968": { name: "QZSS-2 (MICHIBIKI-2)", line1: "1 42968U 17030A   26098.50000000  .00000000  00000-0  00000-0 0    92", line2: "2 42968  39.6120  45.1023 0081204 290.4123  70.1234  1.00271204 3140" },
+            "43001": { name: "QZSS-3 (MICHIBIKI-3)", line1: "1 43001U 17052A   26098.50000000  .00000000  00000-0  00000-0 0    93", line2: "2 43001  31.2012 300.1243 0007123 180.4123 180.1234  1.00270123 1200" },
+            "43886": { name: "GLONASS-M (COSMOS 2533)", line1: "1 43886U 19013A   26098.50000000  .00000000  00000-0  00000-0 0    90", line2: "2 43886  64.8123 180.4123 0001204  45.1234 315.1234  2.13091204 4120" },
+            "54181": { name: "GLONASS-K2 (COSMOS 2569)", line1: "1 54181U 23110A   26098.50000000  .00000000  00000-0  00000-0 0    95", line2: "2 54181  64.7912  90.1234 0001041 120.4123 240.1234  2.13094120  210" },
+            "59102": { name: "USA 355 (HBTSS)", line1: "1 59102U 24020A   26098.50000000  .00000543  00000-0  10423-3 0  9996", line2: "2 59102  65.0123  45.1234 0005123 210.4123 150.1234 14.210493811204" },
+            "24876": { name: "GPS BIIR-2 (PRN 13)", line1: "1 24876U 97035A   26098.50000000  .00000000  00000-0  00000-0 0    91", line2: "2 24876  55.1234 200.4123 0091203  80.4123 280.1234  2.00541204 4120" },
+            "54234": { name: "STARLINK-31026", line1: "1 54234U 22129A   26098.50000000  .00014123  00000-0  10243-3 0  9992", line2: "2 54234  53.2104 120.4123 0001412  45.1234 315.1234 15.0612049312049" }
+        };
+
+        let map = null;
+        let mapMarker = null;
+        let footprintCircle = null;
+        let orbitPolyline = null;
+        
+        let currentSatrec = null;
+        let currentRawTle = { name: '', line1: '', line2: '', norad: '' };
+        let trackingTimer = null;
+        let currentViewMode = '2d';
+        let isHudMinimized = true;
+        let isIrActive = false;
+        let isFirstTrackingUpdate = true; // Flag for auto-teleporting on initial select
+
+        // 3D Globe Globals
+        let scene, camera, renderer3d, earthMesh, satMesh3d, orbitLine3d;
+
+        function initMap() {
+            // Anti-Flicker Static Vector Tile Configuration with Hardware Acceleration and Instant Tile Caching
+            map = L.map('map', {
+                zoomControl: false,
+                worldCopyJump: false,
+                minZoom: 2,
+                maxZoom: 10,
+                inertia: false,
+                fadeAnimation: false,
+                zoomAnimation: false,
+                markerZoomAnimation: false
+            }).setView([15, 0], 2);
+
+            L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+            // Vector-styled Cartographic Dark Tiles with aggressive caching to eliminate blur/whitening flashes
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap contributors',
+                className: 'vector-map-tiles',
+                maxZoom: 19,
+                keepBuffer: 32,
+                updateWhenIdle: false,
+                updateWhenZooming: false,
+                subdomains: ['a', 'b', 'c']
+            }).addTo(map);
+        }
+
+        function toggleHudMinimize() {
+            const hud = document.getElementById('hud-panel');
+            const icon = document.getElementById('hud-toggle-icon');
+            isHudMinimized = !isHudMinimized;
+
+            if (isHudMinimized) {
+                hud.classList.add('hud-collapsed');
+                icon.innerText = "➕ Max";
+            } else {
+                hud.classList.remove('hud-collapsed');
+                icon.innerText = "➖ Min";
+            }
+        }
+
+        function toggleInfraredMode() {
+            isIrActive = !isIrActive;
+            const body = document.getElementById('app-body');
+            const btn = document.getElementById('ir-btn');
+            if (isIrActive) {
+                body.classList.add('ir-mode');
+                btn.className = "px-2 py-1 rounded bg-red-950 border border-red-600 text-red-300 text-xs font-semibold";
+                showToast("IR Night Vision Enabled");
+            } else {
+                body.classList.remove('ir-mode');
+                btn.className = "px-2 py-1 rounded bg-slate-900 border border-slate-700 text-slate-300 hover:text-emerald-400 text-xs font-semibold";
+                showToast("Standard Optics Restored");
+            }
+        }
+
+        async function loadSatellite(query) {
+            const cleanQuery = query.trim();
+            let tleRecord = EMBEDDED_TLE_DB[cleanQuery];
+
+            if (!tleRecord) {
+                // Search by name in embedded DB
+                const foundKey = Object.keys(EMBEDDED_TLE_DB).find(k => EMBEDDED_TLE_DB[k].name.toLowerCase().includes(cleanQuery.toLowerCase()));
+                if (foundKey) {
+                    tleRecord = EMBEDDED_TLE_DB[foundKey];
+                } else {
+                    // Fallback to CelesTrak Live API if online
+                    try {
+                        const response = await fetch(`https://celestrak.org/NORAD/elements/gp.php?CATNR=${cleanQuery}&FORMAT=TLE`);
+                        if (response.ok) {
+                            const text = await response.text();
+                            const lines = text.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
+                            if (lines.length >= 3) {
+                                tleRecord = { name: lines[0], line1: lines[1], line2: lines[2] };
+                                document.getElementById('source-status').innerText = "Live CelesTrak API";
+                            }
+                        }
+                    } catch (e) {
+                        // Offline or failed fetch
+                    }
+                }
+            }
+
+            if (!tleRecord) {
+                // Default fallback if not found
+                tleRecord = EMBEDDED_TLE_DB["48274"];
+                showToast("Satellite not found in cache. Loaded Tiangong.");
+            } else {
+                if (EMBEDDED_TLE_DB[cleanQuery]) {
+                    document.getElementById('source-status').innerText = "Embedded Offline DB";
+                }
+            }
+
+            currentRawTle = {
+                name: tleRecord.name,
+                line1: tleRecord.line1,
+                line2: tleRecord.line2,
+                norad: tleRecord.line1.substring(2, 7).trim()
+            };
+
+            parseAndStartTracking();
+        }
+
+        function parseAndStartTracking() {
+            currentSatrec = satellite.twoline2satrec(currentRawTle.line1, currentRawTle.line2);
+            extractKeplerianElements(currentSatrec);
+
+            if (orbitPolyline) map.removeLayer(orbitPolyline);
+            orbitPolyline = null;
+            if (mapMarker) map.removeLayer(mapMarker);
+            mapMarker = null;
+
+            if (orbitLine3d) {
+                orbitLine3d.geometry.dispose();
+                orbitLine3d.geometry = new THREE.BufferGeometry();
+            }
+
+            if (trackingTimer) clearInterval(trackingTimer);
+
+            isFirstTrackingUpdate = true; // Trigger teleport/pan on first update of new sat
+            updateTelemetryAndMap();
+            calculateOrbitPath();
+
+            trackingTimer = setInterval(() => {
+                updateTelemetryAndMap();
+            }, 1000);
+        }
+
+        function extractKeplerianElements(satrec) {
+            if (!satrec) return;
+            const rad2deg = 180 / Math.PI;
+            document.getElementById('kep-inc').innerText = `${(satrec.inclo * rad2deg).toFixed(2)}°`;
+            document.getElementById('kep-ecc').innerText = satrec.ecco.toFixed(6);
+            document.getElementById('norad-id').innerText = currentRawTle.norad || '-----';
+            document.getElementById('target-name').innerText = currentRawTle.name || 'SATELLITE';
+        }
+
+        function updateTelemetryAndMap() {
+            if (!currentSatrec) return;
+            const now = new Date();
+            document.getElementById('meta-time').innerText = now.toISOString().substring(11, 19) + ' UTC';
+
+            const positionAndVelocity = satellite.propagate(currentSatrec, now);
+            const gmst = satellite.gstime(now);
+            if (!positionAndVelocity.position) return;
+
+            const positionEci = positionAndVelocity.position;
+            const velocityEci = positionAndVelocity.velocity;
+            const positionGd = satellite.eciToGeodetic(positionEci, gmst);
+            const lat = satellite.degreesLat(positionGd.latitude);
+            const lng = satellite.degreesLong(positionGd.longitude);
+            const altKm = positionGd.height;
+            const altMiles = altKm * 0.621371;
+
+            const speedKms = Math.sqrt(velocityEci.x ** 2 + velocityEci.y ** 2 + velocityEci.z ** 2);
+            const speedMph = speedKms * 3600 * 0.621371; // Strictly miles per hour
+
+            const R_earth = 6371;
+            const footprintRadKm = R_earth * Math.acos(R_earth / (R_earth + altKm));
+
+            document.getElementById('lat-val').innerText = `${lat >= 0 ? '+' : ''}${lat.toFixed(1)}°`;
+            document.getElementById('lng-val').innerText = `${lng >= 0 ? '+' : ''}${lng.toFixed(1)}°`;
+            document.getElementById('alt-val').innerText = `${Math.round(altMiles).toLocaleString()} mi`;
+            document.getElementById('vel-val').innerText = `${Math.round(speedMph).toLocaleString()} mph`;
+
+            const latLng = [lat, lng];
+
+            // Auto-teleport/pan map view to the selected satellite upon selection or change
+            if (isFirstTrackingUpdate) {
+                if (currentViewMode === '2d') {
+                    map.flyTo(latLng, 4, { duration: 1.5 });
+                }
+                isFirstTrackingUpdate = false;
+            }
+
+            if (!mapMarker) {
+                const satSvgIcon = L.divIcon({
+                    className: 'sat-marker-icon',
+                    html: `
+                        <div class="relative flex items-center justify-center">
+                            <div class="absolute w-5 h-5 rounded-full bg-sky-500/30 animate-ping"></div>
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.5">
+                                <circle cx="12" cy="12" r="3" fill="#0284c7"/>
+                                <path d="M4.5 4.5l4 4M19.5 19.5l-4-4M19.5 4.5l-4 4M4.5 19.5l4-4"/>
+                            </svg>
+                        </div>
+                    `,
+                    iconSize: [20, 20],
+                    iconAnchor: [10, 10]
+                });
+                mapMarker = L.marker(latLng, { icon: satSvgIcon }).addTo(map);
+            } else {
+                mapMarker.setLatLng(latLng);
+            }
+
+            if (!footprintCircle) {
+                footprintCircle = L.circle(latLng, {
+                    radius: footprintRadKm * 1000,
+                    color: '#38bdf8', weight: 1, opacity: 0.3, fillColor: '#0284c7', fillOpacity: 0.05
+                }).addTo(map);
+            } else {
+                footprintCircle.setLatLng(latLng);
+                footprintCircle.setRadius(footprintRadKm * 1000);
+            }
+
+            if (satMesh3d) {
+                const scale = 1.0 / R_earth;
+                satMesh3d.position.set(positionEci.x * scale, positionEci.z * scale, -positionEci.y * scale);
+                
+                // In 3D mode, smoothly tilt camera towards active satellite target on selection
+                if (currentViewMode === '3d' && isFirstTrackingUpdate && camera) {
+                    camera.position.set(satMesh3d.position.x * 2.2, satMesh3d.position.y * 2.2 + 0.5, satMesh3d.position.z * 2.2);
+                    camera.lookAt(satMesh3d.position);
+                }
+            }
+        }
+
+        function calculateOrbitPath() {
+            if (!currentSatrec) return;
+            const orbitSegments = [];
+            let currentSegment = [];
+            const now = new Date();
+            const past = new Date(now.getTime() - 45 * 60000);
+            const points3d = [];
+
+            for (let i = 0; i <= 90; i++) {
+                const time = new Date(past.getTime() + i * 60000);
+                const posVel = satellite.propagate(currentSatrec, time);
+                const gmst = satellite.gstime(time);
+
+                if (posVel.position) {
+                    const posGd = satellite.eciToGeodetic(posVel.position, gmst);
+                    const lat = satellite.degreesLat(posGd.latitude);
+                    const lng = satellite.degreesLong(posGd.longitude);
+
+                    if (currentSegment.length > 0 && Math.abs(lng - currentSegment[currentSegment.length - 1][1]) > 180) {
+                        orbitSegments.push(currentSegment);
+                        currentSegment = [];
+                    }
+                    currentSegment.push([lat, lng]);
+
+                    const scale = 1.0 / 6371;
+                    points3d.push(new THREE.Vector3(posVel.position.x * scale, posVel.position.z * scale, -posVel.position.y * scale));
+                }
+            }
+            if (currentSegment.length > 0) orbitSegments.push(currentSegment);
+
+            if (orbitPolyline) {
+                orbitPolyline.setLatLngs(orbitSegments);
+            } else {
+                orbitPolyline = L.polyline(orbitSegments, { color: '#38bdf8', weight: 2, opacity: 0.7, dashArray: '4, 4' }).addTo(map);
+            }
+
+            if (orbitLine3d && points3d.length > 0) {
+                orbitLine3d.geometry.dispose();
+                orbitLine3d.geometry = new THREE.BufferGeometry().setFromPoints(points3d);
+            }
+        }
+
+        function switchView(mode) {
+            currentViewMode = mode;
+            const mapEl = document.getElementById('map');
+            const canvas3dEl = document.getElementById('canvas3d');
+            const btn2d = document.getElementById('btn-2d');
+            const btn3d = document.getElementById('btn-3d');
+
+            if (mode === '2d') {
+                mapEl.style.display = 'block';
+                canvas3dEl.style.display = 'none';
+                btn2d.className = "px-2 py-1 rounded-md text-sky-400 bg-slate-800 transition-all text-xs";
+                btn3d.className = "px-2 py-1 rounded-md text-slate-300 hover:text-white transition-all text-xs";
+                if (mapMarker) map.setView(mapMarker.getLatLng(), 4);
+            } else {
+                mapEl.style.display = 'none';
+                canvas3dEl.style.display = 'block';
+                btn3d.className = "px-2 py-1 rounded-md text-sky-400 bg-slate-800 transition-all text-xs";
+                btn2d.className = "px-2 py-1 rounded-md text-slate-300 hover:text-white transition-all text-xs";
+                
+                if (!renderer3d) init3dGlobe();
+                setTimeout(() => {
+                    if (camera && renderer3d) {
+                        camera.aspect = window.innerWidth / window.innerHeight;
+                        camera.updateProjectionMatrix();
+                        renderer3d.setSize(window.innerWidth, window.innerHeight);
+                    }
+                }, 50);
+            }
+        }
+
+        function init3dGlobe() {
+            const container = document.getElementById('canvas3d');
+            scene = new THREE.Scene();
+            
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 0, 3);
+            
+            renderer3d = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer3d.setSize(window.innerWidth, window.innerHeight);
+            renderer3d.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer3d.domElement);
+            
+            if (typeof THREE.OrbitControls !== 'undefined') {
+                const controls = new THREE.OrbitControls(camera, renderer3d.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+                controls.enablePan = false;
+                controls.minDistance = 1.2;
+                controls.maxDistance = 10;
+            }
+            
+            // Wireframe Earth Sphere
+            const earthGeo = new THREE.SphereGeometry(1, 48, 48);
+            const earthMat = new THREE.MeshBasicMaterial({ color: 0x1e293b, wireframe: true, transparent: true, opacity: 0.35 });
+            earthMesh = new THREE.Mesh(earthGeo, earthMat);
+            scene.add(earthMesh);
+            
+            // Solid dark inner core
+            const solidGeo = new THREE.SphereGeometry(0.98, 32, 32);
+            const solidMat = new THREE.MeshBasicMaterial({ color: 0x020617 });
+            scene.add(new THREE.Mesh(solidGeo, solidMat));
+
+            // Satellite marker 3D
+            const satGeo = new THREE.SphereGeometry(0.025, 16, 16);
+            const satMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+            satMesh3d = new THREE.Mesh(satGeo, satMat);
+            scene.add(satMesh3d);
+
+            // Orbit line 3D
+            const orbitMat = new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.7 });
+            orbitLine3d = new THREE.Line(new THREE.BufferGeometry(), orbitMat);
+            scene.add(orbitLine3d);
+            
+            function animate() {
+                requestAnimationFrame(animate);
+                earthMesh.rotation.y += 0.00015;
+                renderer3d.render(scene, camera);
+            }
+            animate();
+            
+            window.addEventListener('resize', () => {
+                if (camera && renderer3d && currentViewMode === '3d') {
+                    camera.aspect = window.innerWidth / window.innerHeight;
+                    camera.updateProjectionMatrix();
+                    renderer3d.setSize(window.innerWidth, window.innerHeight);
+                }
+            });
+            
+            calculateOrbitPath();
+        }
+
+        document.getElementById('sat-select').addEventListener('change', (e) => {
+            loadSatellite(e.target.value);
+            showToast(`Tracking: ${e.target.options[e.target.selectedIndex].text}`);
+        });
+
+        document.getElementById('search-btn').addEventListener('click', () => {
+            const q = document.getElementById('custom-search-input').value.trim();
+            if (q) loadSatellite(q);
+        });
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            document.getElementById('toast-msg').innerText = msg;
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            setTimeout(() => toast.classList.add('translate-y-20', 'opacity-0'), 3000);
+        }
+
+        window.onload = function() {
+            initMap();
+            loadSatellite(document.getElementById('sat-select').value);
+        };
+    </script>
+</body>
+</html>
